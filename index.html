@@ -82,7 +82,7 @@
   const clock = new THREE.Clock();
   const loader = new THREE.GLTFLoader();
   loader.load(
-    'model (1).glb',
+    'model.glb',
     (gltf) => {
       avatar = gltf.scene;
 
@@ -90,7 +90,7 @@
       // these three lines are the ones you'll most likely need to tweak.
       avatar.scale.set(1, 1, 1);
       avatar.position.set(0, -1.5, 0); // nudge down if it's a full-body figure
-      avatar.rotation.y = 0;     // many exports face away from the camera by default
+      avatar.rotation.y = 0;           // adjust in increments of Math.PI / 2 if it's still off-facing
 
       scene.add(avatar);
 
