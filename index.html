@@ -76,11 +76,13 @@
   scene.add(dirLight);
 
   // ---- 3. Load the avatar model (model.glb) ----
-  let avatar; // will point at the loaded model once it's ready
+  let avatar;   // will point at the loaded model once it's ready
+  let mixer;    // drives any animation clips baked into the GLB
 
+  const clock = new THREE.Clock();
   const loader = new THREE.GLTFLoader();
   loader.load(
-    'model (1).glb',
+    'model.glb',
     (gltf) => {
       avatar = gltf.scene;
 
@@ -91,6 +93,16 @@
       avatar.rotation.y = Math.PI;     // many exports face away from the camera by default
 
       scene.add(avatar);
+
+      // Play the first animation clip found in the file, if any.
+      if (gltf.animations && gltf.animations.length > 0) {
+        mixer = new THREE.AnimationMixer(avatar);
+        const action = mixer.clipAction(gltf.animations[0]);
+        action.play();
+        console.log(`Playing animation: "${gltf.animations[0].name}"`);
+      } else {
+        console.log('No animations found in model.glb');
+      }
     },
     (progress) => {
       if (progress.total) {
@@ -106,8 +118,8 @@
   function animate() {
     requestAnimationFrame(animate);
 
-    if (avatar) {
-      avatar.rotation.y += 0.006;
+    if (mixer) {
+      mixer.update(clock.getDelta());
     }
 
     renderer.render(scene, camera);
