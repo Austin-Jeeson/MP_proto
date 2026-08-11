@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>three.js + WebXR floor placement</title>
+<title>three.js starter</title>
 <style>
   html, body {
     margin: 0;
@@ -14,46 +14,27 @@
   }
   canvas { display: block; }
 
-  #ar-button {
+  #camera-feed {
     position: fixed;
-    bottom: 30px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 10;
-    padding: 12px 24px;
-    background: rgba(15, 21, 28, 0.85);
-    color: #4ce0d2;
-    border: 1px solid #4ce0d2;
-    font-family: sans-serif;
-    font-size: 14px;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-    cursor: pointer;
-  }
-  #ar-button:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    z-index: 0;
   }
 
-  #hint {
+  #orb-canvas {
     position: fixed;
-    top: 20px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 10;
-    color: #fff;
-    font-family: sans-serif;
-    font-size: 13px;
-    background: rgba(0,0,0,0.5);
-    padding: 8px 16px;
-    display: none;
+    top: 0;
+    left: 0;
+    z-index: 1;
   }
 </style>
 </head>
 <body>
 
-<button id="ar-button">Checking AR support…</button>
-<div id="hint">Move your phone slowly to scan the floor, then tap to place the model</div>
+<video id="camera-feed" autoplay playsinline muted></video>
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.122.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.122.0/examples/js/loaders/GLTFLoader.js"></script>
@@ -64,25 +45,37 @@
   const camera = new THREE.PerspectiveCamera(
     45,
     window.innerWidth / window.innerHeight,
-    0.01,   // near clip is small on purpose — AR content can sit close to the camera
-    20
+    0.1,
+    100
   );
+  camera.position.set(0, 0, 5);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.xr.enabled = true; // <-- turns this renderer into a WebXR-capable one
+  renderer.domElement.id = 'orb-canvas';
   document.body.appendChild(renderer.domElement);
 
+  // ---- Webcam feed as the page background ----
+  const video = document.getElementById('camera-feed');
+  navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    .then((stream) => {
+      video.srcObject = stream;
+    })
+    .catch((err) => {
+      console.error('Could not access camera:', err);
+      document.body.style.background = '#0a0e13'; // fallback if camera is denied
+    });
+
   // ---- 2. Lighting ----
-  const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+  const ambient = new THREE.AmbientLight(0xffffff, 0.4);
   scene.add(ambient);
 
-  const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+  const dirLight = new THREE.DirectionalLight(0x4ce0d2, 1);
   dirLight.position.set(3, 4, 5);
   scene.add(dirLight);
 
-  // ---- 3. Load the avatar model (model.glb), hidden until placed ----
+  // ---- 3. Load the avatar model (model.glb) ----
   let avatar;
   let mixer;
   const clock = new THREE.Clock();
@@ -93,112 +86,43 @@
     (gltf) => {
       avatar = gltf.scene;
       avatar.scale.set(1, 1, 1);
-      avatar.visible = false; // stays hidden until the user taps the floor
+      avatar.position.set(0, -1.5, 0);
+      avatar.rotation.y = 0;
+
       scene.add(avatar);
 
       if (gltf.animations && gltf.animations.length > 0) {
         mixer = new THREE.AnimationMixer(avatar);
-        mixer.clipAction(gltf.animations[0]).play();
+        const action = mixer.clipAction(gltf.animations[0]);
+        action.play();
+        console.log(`Playing animation: "${gltf.animations[0].name}"`);
+      } else {
+        console.log('No animations found in model.glb');
       }
     },
-    undefined,
-    (error) => console.error('Failed to load model.glb:', error)
+    (progress) => {
+      if (progress.total) {
+        console.log(`Loading model: ${Math.round((progress.loaded / progress.total) * 100)}%`);
+      }
+    },
+    (error) => {
+      console.error('Failed to load model.glb:', error);
+    }
   );
 
-  // ---- 4. Reticle: shows where the detected floor is, before you tap ----
-  const reticle = new THREE.Mesh(
-    new THREE.RingGeometry(0.08, 0.1, 32).rotateX(-Math.PI / 2),
-    new THREE.MeshBasicMaterial({ color: 0x4ce0d2 })
-  );
-  reticle.matrixAutoUpdate = false;
-  reticle.visible = false;
-  scene.add(reticle);
+  // ---- 4. Animation loop ----
+  function animate() {
+    requestAnimationFrame(animate);
 
-  // ---- 5. Tap-to-place: on select, drop the avatar at the reticle's position ----
-  function onSelect() {
-    if (!reticle.visible || !avatar) return;
-    avatar.position.setFromMatrixPosition(reticle.matrix); // x/y/z of the detected floor point
-    avatar.visible = true;
-  }
-
-  const controller = renderer.xr.getController(0);
-  controller.addEventListener('select', onSelect);
-  scene.add(controller);
-
-  // ---- 6. AR session setup (button + hit-test source) ----
-  const arButton = document.getElementById('ar-button');
-  const hint = document.getElementById('hint');
-  let hitTestSource = null;
-  let hitTestSourceRequested = false;
-
-  async function checkARSupport() {
-    if (!navigator.xr) {
-      arButton.textContent = 'WebXR not supported in this browser';
-      arButton.disabled = true;
-      return;
-    }
-    const supported = await navigator.xr.isSessionSupported('immersive-ar');
-    if (!supported) {
-      arButton.textContent = 'AR not supported on this device';
-      arButton.disabled = true;
-      return;
-    }
-    arButton.textContent = 'Start AR';
-  }
-  checkARSupport();
-
-  arButton.addEventListener('click', async () => {
-    if (renderer.xr.getSession()) {
-      renderer.xr.getSession().end();
-      return;
-    }
-    const session = await navigator.xr.requestSession('immersive-ar', {
-      requiredFeatures: ['hit-test']
-    });
-    session.addEventListener('end', () => {
-      hitTestSourceRequested = false;
-      hitTestSource = null;
-      reticle.visible = false;
-      hint.style.display = 'none';
-      arButton.textContent = 'Start AR';
-    });
-    await renderer.xr.setSession(session);
-    arButton.textContent = 'Exit AR';
-    hint.style.display = 'block';
-  });
-
-  // ---- 7. Render loop (also drives the hit-test each frame while in AR) ----
-  renderer.setAnimationLoop((timestamp, frame) => {
-    if (frame) {
-      const referenceSpace = renderer.xr.getReferenceSpace();
-      const session = renderer.xr.getSession();
-
-      if (!hitTestSourceRequested) {
-        session.requestReferenceSpace('viewer').then((viewerSpace) => {
-          session.requestHitTestSource({ space: viewerSpace }).then((source) => {
-            hitTestSource = source;
-          });
-        });
-        hitTestSourceRequested = true;
-      }
-
-      if (hitTestSource) {
-        const hitTestResults = frame.getHitTestResults(hitTestSource);
-        if (hitTestResults.length > 0) {
-          const hit = hitTestResults[0];
-          reticle.visible = true;
-          reticle.matrix.fromArray(hit.getPose(referenceSpace).transform.matrix);
-        } else {
-          reticle.visible = false;
-        }
-      }
+    if (mixer) {
+      mixer.update(clock.getDelta());
     }
 
-    if (mixer) mixer.update(clock.getDelta());
     renderer.render(scene, camera);
-  });
+  }
+  animate();
 
-  // ---- 8. Handle window resize ----
+  // ---- 5. Handle window resize ----
   window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
