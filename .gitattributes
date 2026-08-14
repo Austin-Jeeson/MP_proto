@@ -1,2 +1,24 @@
+cat << 'EOF'
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Never normalize these — they are binary and must be byte-for-byte exact
+*.glb binary
+*.gltf binary
+*.mind binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+EOF
+Output
+
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Never normalize these — they are binary and must be byte-for-byte exact
+*.glb binary
+*.gltf binary
+*.mind binary
+*.png binary
+*.jpg binary
+*.jpeg binary
