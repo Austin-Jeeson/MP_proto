@@ -30,6 +30,24 @@
     border-radius: 4px;
     text-align: center;
   }
+  #debug {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 20;
+    max-height: 45vh;
+    overflow-y: auto;
+    background: rgba(0,0,0,0.85);
+    color: #4ce0d2;
+    font-family: monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    padding: 10px 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  #debug .err { color: #ff7a6b; }
 </style>
 
 <!-- Import map: lets the module script below use "three" and "mindar-image-three" as bare names -->
@@ -47,17 +65,42 @@
 
 <div id="hint">Point your camera at the marker image</div>
 <div id="ar-container"></div>
+<div id="debug"></div>
+
+<script>
+  // Plain (non-module) script so it runs even if the module below fails to load at all.
+  const debugEl = document.getElementById('debug');
+  function log(msg, isError) {
+    const line = document.createElement('div');
+    if (isError) line.className = 'err';
+    line.textContent = (isError ? '[ERROR] ' : '[LOG] ') + msg;
+    debugEl.appendChild(line);
+  }
+  window.addEventListener('error', (e) => log(e.message + ' (' + e.filename + ':' + e.lineno + ')', true));
+  window.addEventListener('unhandledrejection', (e) => log('Unhandled promise rejection: ' + (e.reason && e.reason.message ? e.reason.message : e.reason), true));
+  log('Debug console active. Waiting for module script...');
+</script>
 
 <script type="module">
   import * as THREE from 'three';
   import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   import { MindARThree } from 'mindar-image-three';
 
+  const log = (msg, isError) => {
+    const line = document.createElement('div');
+    if (isError) line.className = 'err';
+    line.textContent = (isError ? '[ERROR] ' : '[LOG] ') + msg;
+    document.getElementById('debug').appendChild(line);
+  };
+
+  log('Module script started.');
+
   // ---- 1. Set up MindAR — this creates the camera feed + three.js scene/camera for us ----
   const mindarThree = new MindARThree({
     container: document.querySelector('#ar-container'),
     imageTargetSrc: './targets.mind', // <-- the file you compile from your marker image
   });
+  log('MindARThree instance created.');
 
   const { renderer, scene, camera } = mindarThree;
 
@@ -77,6 +120,7 @@
   loader.load(
     'model.glb',
     (gltf) => {
+      log('model.glb loaded successfully.');
       const avatar = gltf.scene;
 
       // scale/position here are relative to the marker, which MindAR treats as
@@ -91,17 +135,25 @@
         mixer.clipAction(gltf.animations[0]).play();
       }
     },
-    undefined,
-    (error) => console.error('Failed to load model.glb:', error)
+    (progress) => {
+      if (progress.total) log('Loading model.glb: ' + Math.round((progress.loaded / progress.total) * 100) + '%');
+    },
+    (error) => log('Failed to load model.glb: ' + error.message, true)
   );
 
   // ---- 5. Start the AR session and render loop ----
   const start = async () => {
-    await mindarThree.start();
-    renderer.setAnimationLoop(() => {
-      if (mixer) mixer.update(clock.getDelta());
-      renderer.render(scene, camera);
-    });
+    try {
+      log('Calling mindarThree.start()...');
+      await mindarThree.start();
+      log('mindarThree.start() resolved — tracking is live.');
+      renderer.setAnimationLoop(() => {
+        if (mixer) mixer.update(clock.getDelta());
+        renderer.render(scene, camera);
+      });
+    } catch (err) {
+      log('mindarThree.start() threw: ' + (err && err.message ? err.message : err), true);
+    }
   };
   start();
 </script>
