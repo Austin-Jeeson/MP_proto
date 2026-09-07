@@ -78,9 +78,12 @@
 }
 </script>
 
-<!-- CHANGED: Convai Pixel Streaming embed (UMD build, exposes window.PixelStreamClient).
-     No bundler needed, matches the plain-script style of the rest of this file. -->
-<script src="https://unpkg.com/@convai/experience-embed/dist/convai-embed.umd.js"></script>
+<!-- CHANGED: Convai Pixel Streaming embed (UMD build).
+     Convai's docs and their npm README disagree on the file path and global name
+     (window.PixelStreamClient vs window.PixelStreamCore.PixelStreamClient), so we
+     load the docs' path here and resolve the actual constructor defensively below. -->
+<script src="https://unpkg.com/@convai/experience-embed/dist/convai-embed.umd.js"
+        onerror="window.__convaiScriptFailed = true;"></script>
 </head>
 <body>
 
@@ -119,6 +122,14 @@
 
   log('Module script started.');
 
+  // CHANGED: early diagnostic so you don't have to wait for a target-found event
+  // to find out whether the Convai script loaded and what it exposed.
+  window.addEventListener('load', () => {
+    log('window.PixelStreamClient: ' + typeof window.PixelStreamClient);
+    log('window.PixelStreamCore: ' + typeof window.PixelStreamCore);
+    if (window.__convaiScriptFailed) log('Convai script tag reported a load error.', true);
+  });
+
   // ---- 1. MindAR setup — unchanged, this still gives us camera feed + tracking ----
   const mindarThree = new MindARThree({
     container: document.querySelector('#ar-container'),
@@ -145,11 +156,50 @@
   let pixelStream = null;
   let pixelStreamReady = false;
 
+  // CHANGED: resolve the actual constructor defensively, since Convai's own docs
+  // and npm README disagree on where it lives (window.PixelStreamClient vs
+  // window.PixelStreamCore.PixelStreamClient), and the exact export can change
+  // between package versions.
+  function resolvePixelStreamClient() {
+    if (typeof window.PixelStreamClient === 'function') {
+      log('Found constructor at window.PixelStreamClient');
+      return window.PixelStreamClient;
+    }
+    if (window.PixelStreamCore && typeof window.PixelStreamCore.PixelStreamClient === 'function') {
+      log('Found constructor at window.PixelStreamCore.PixelStreamClient');
+      return window.PixelStreamCore.PixelStreamClient;
+    }
+    // Last resort: scan top-level globals for anything named PixelStreamClient,
+    // in case the UMD build namespaced it under a package-name-derived global.
+    for (const key of Object.keys(window)) {
+      const val = window[key];
+      if (val && typeof val === 'object' && typeof val.PixelStreamClient === 'function') {
+        log('Found constructor at window.' + key + '.PixelStreamClient');
+        return val.PixelStreamClient;
+      }
+    }
+    return null;
+  }
+
   function initConvaiAvatar() {
     if (pixelStream) return; // only initialize once
+
+    if (window.__convaiScriptFailed) {
+      log('Convai embed script failed to load entirely (network/404). Check the <script src> URL in a new tab.', true);
+      return;
+    }
+
+    const PixelStreamClientCtor = resolvePixelStreamClient();
+    if (!PixelStreamClientCtor) {
+      log('Convai embed script loaded but no PixelStreamClient constructor was found on window. ' +
+          'Open browser devtools and run: console.log(window) to inspect what the script actually exposed, ' +
+          'then tell me the object/key name so I can hardcode the right path.', true);
+      return;
+    }
+
     log('Initializing Convai Pixel Stream...');
     try {
-      pixelStream = new window.PixelStreamClient({
+      pixelStream = new PixelStreamClientCtor({
         container: overlayEl,
         expId: CONVAI_EXP_ID,
       });
