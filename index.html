@@ -78,11 +78,9 @@
 }
 </script>
 
-<!-- CHANGED: Convai Pixel Streaming embed (UMD build).
-     Convai's docs and their npm README disagree on the file path and global name
-     (window.PixelStreamClient vs window.PixelStreamCore.PixelStreamClient), so we
-     load the docs' path here and resolve the actual constructor defensively below. -->
-<script src="https://unpkg.com/@convai/experience-embed/dist/convai-embed.umd.js"
+<!-- CHANGED: correct CDN path. Convai's own "CDN (UMD Script)" doc page is missing
+     the /core/ segment and 404s — the npm package's own README has the right path. -->
+<script src="https://unpkg.com/@convai/experience-embed/dist/core/convai-embed.umd.js"
         onerror="window.__convaiScriptFailed = true;"></script>
 </head>
 <body>
@@ -181,12 +179,30 @@
     return null;
   }
 
-  function initConvaiAvatar() {
+  function loadScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = () => resolve(true);
+      s.onerror = () => reject(new Error('load failed: ' + src));
+      document.head.appendChild(s);
+    });
+  }
+
+  async function initConvaiAvatar() {
     if (pixelStream) return; // only initialize once
 
-    if (window.__convaiScriptFailed) {
-      log('Convai embed script failed to load entirely (network/404). Check the <script src> URL in a new tab.', true);
-      return;
+    // CHANGED: if the primary unpkg <script> tag failed (e.g. blocked network,
+    // unpkg hiccup), retry once via jsdelivr before giving up.
+    if (window.__convaiScriptFailed && !resolvePixelStreamClient()) {
+      log('Primary Convai script failed to load — retrying via jsdelivr...');
+      try {
+        await loadScript('https://cdn.jsdelivr.net/npm/@convai/experience-embed/dist/core/convai-embed.umd.js');
+        log('jsdelivr fallback script loaded.');
+      } catch (err) {
+        log('jsdelivr fallback also failed to load: ' + err.message, true);
+        return;
+      }
     }
 
     const PixelStreamClientCtor = resolvePixelStreamClient();
