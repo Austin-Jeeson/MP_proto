@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>MindAR image tracking</title>
+<title>MindAR image tracking + Convai avatar</title>
 <style>
   html, body {
     margin: 0;
@@ -48,9 +48,26 @@
     word-break: break-word;
   }
   #debug .err { color: #ff7a6b; }
+
+  /* CHANGED: floating overlay that carries the Convai avatar video.
+     This sits ON TOP of the MindAR canvas (not inside the Three.js scene) —
+     see explanation in chat about why the avatar can't be a THREE.Object3D. */
+  #convai-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 220px;
+    height: 220px;
+    z-index: 5;
+    pointer-events: none;   /* let AR camera drag/taps pass through */
+    transform-origin: center bottom;
+    display: none;          /* shown only while the marker is tracked */
+    border-radius: 12px;
+    overflow: hidden;
+    background: rgba(0,0,0,0.15); /* faint so you can see the container while tuning */
+  }
 </style>
 
-<!-- Import map: lets the module script below use "three" and "mindar-image-three" as bare names -->
 <script type="importmap">
 {
   "imports": {
@@ -60,15 +77,22 @@
   }
 }
 </script>
+
+<!-- CHANGED: Convai Pixel Streaming embed (UMD build, exposes window.PixelStreamClient).
+     No bundler needed, matches the plain-script style of the rest of this file. -->
+<script src="https://unpkg.com/@convai/experience-embed/dist/convai-embed.umd.js"></script>
 </head>
 <body>
 
 <div id="hint">Point your camera at the marker image</div>
 <div id="ar-container"></div>
+
+<!-- CHANGED: Convai avatar mount point -->
+<div id="convai-overlay"></div>
+
 <div id="debug"></div>
 
 <script>
-  // Plain (non-module) script so it runs even if the module below fails to load at all.
   const debugEl = document.getElementById('debug');
   function log(msg, isError) {
     const line = document.createElement('div');
@@ -83,8 +107,8 @@
 
 <script type="module">
   import * as THREE from 'three';
-  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
   import { MindARThree } from 'mindar-image-three';
+  // CHANGED: GLTFLoader import removed — no 3D model to load anymore.
 
   const log = (msg, isError) => {
     const line = document.createElement('div');
@@ -95,60 +119,94 @@
 
   log('Module script started.');
 
-  // ---- 1. Set up MindAR — this creates the camera feed + three.js scene/camera for us ----
+  // ---- 1. MindAR setup — unchanged, this still gives us camera feed + tracking ----
   const mindarThree = new MindARThree({
     container: document.querySelector('#ar-container'),
-    imageTargetSrc: './targets.mind', // <-- the file you compile from your marker image
+    imageTargetSrc: './targets.mind',
   });
   log('MindARThree instance created.');
 
   const { renderer, scene, camera } = mindarThree;
 
-  // ---- 2. Lighting (added to the main scene, so it's always present) ----
+  // ---- 2. Lighting — harmless to keep even with no 3D model, but you can delete this
+  //         block entirely since nothing in the scene needs lighting anymore.
   const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
   scene.add(light);
 
-  // ---- 3. Anchor: a group that MindAR automatically shows/hides and moves
-  //         to match the tracked marker's position, in real time ----
-  const anchor = mindarThree.addAnchor(0); // 0 = first (and only) target in targets.mind
+  // ---- 3. Anchor — unchanged. MindAR still moves this to match the tracked marker;
+  //         we just no longer parent a 3D mesh to it. Instead we read its position
+  //         each frame to drive the HTML overlay below. ----
+  const anchor = mindarThree.addAnchor(0);
 
-  // ---- 4. Load the avatar model and attach it to the anchor, not the scene directly ----
-  let mixer;
-  const clock = new THREE.Clock();
+  // ---- 4. CHANGED: Convai avatar setup (replaces GLTFLoader block) ----
+  const CONVAI_EXP_ID = 'your-experience-id'; // <-- from Avatar Studio publish step
 
-  const loader = new GLTFLoader();
-  loader.load(
-    'model.glb',
-    (gltf) => {
-      log('model.glb loaded successfully.');
-      const avatar = gltf.scene;
+  const overlayEl = document.getElementById('convai-overlay');
+  let pixelStream = null;
+  let pixelStreamReady = false;
 
-      // scale/position here are relative to the marker, which MindAR treats as
-      // roughly 1 unit wide — a full "person" model will likely need to be tiny.
-      avatar.scale.set(0.5, 0.5, 0.5);
-      avatar.position.set(0, 0, 0);
+  function initConvaiAvatar() {
+    if (pixelStream) return; // only initialize once
+    log('Initializing Convai Pixel Stream...');
+    try {
+      pixelStream = new window.PixelStreamClient({
+        container: overlayEl,
+        expId: CONVAI_EXP_ID,
+      });
+      pixelStream.initializeExperience();
+      pixelStreamReady = true;
+      log('Convai Pixel Stream initialized.');
+    } catch (err) {
+      log('Failed to initialize Convai Pixel Stream: ' + (err && err.message ? err.message : err), true);
+    }
+  }
 
-      anchor.group.add(avatar);
+  // Show/hide the overlay based on whether the marker is currently tracked.
+  // targetFound/targetLost are emitted on the anchor by MindAR.
+  anchor.onTargetFound = () => {
+    log('Target found.');
+    if (!pixelStream) initConvaiAvatar(); // lazy-init on first detection
+    overlayEl.style.display = 'block';
+  };
+  anchor.onTargetLost = () => {
+    log('Target lost.');
+    overlayEl.style.display = 'none';
+  };
 
-      if (gltf.animations && gltf.animations.length > 0) {
-        mixer = new THREE.AnimationMixer(avatar);
-        mixer.clipAction(gltf.animations[0]).play();
-      }
-    },
-    (progress) => {
-      if (progress.total) log('Loading model.glb: ' + Math.round((progress.loaded / progress.total) * 100) + '%');
-    },
-    (error) => log('Failed to load model.glb: ' + error.message, true)
-  );
+  // ---- 5. CHANGED: billboard projection — replaces the animation mixer block.
+  //         Projects the anchor's tracked 3D position into 2D screen space each
+  //         frame and moves/scales the overlay div to follow it. ----
+  const anchorWorldPos = new THREE.Vector3();
+  const BASE_SCALE = 1.4; // tune this: bigger = avatar appears larger at a given distance
 
-  // ---- 5. Start the AR session and render loop ----
+  function updateOverlayTransform() {
+    if (overlayEl.style.display === 'none') return;
+
+    anchor.group.getWorldPosition(anchorWorldPos);
+
+    // Project to normalized device coordinates (-1..1), then to CSS pixels.
+    const ndc = anchorWorldPos.clone().project(camera);
+    const screenX = (ndc.x * 0.5 + 0.5) * window.innerWidth;
+    const screenY = (-ndc.y * 0.5 + 0.5) * window.innerHeight;
+
+    // Scale inversely with distance so the avatar shrinks as the marker moves away.
+    const distance = camera.position.distanceTo(anchorWorldPos);
+    const scale = Math.min(2.5, BASE_SCALE / Math.max(distance, 0.01));
+
+    // Anchor point: bottom-center of the overlay sits on the marker's projected position
+    // (like the avatar "standing" on the marker). Adjust to taste.
+    overlayEl.style.transform =
+      `translate(${screenX - overlayEl.offsetWidth / 2}px, ${screenY - overlayEl.offsetHeight}px) scale(${scale})`;
+  }
+
+  // ---- 6. Start the AR session and render loop ----
   const start = async () => {
     try {
       log('Calling mindarThree.start()...');
       await mindarThree.start();
       log('mindarThree.start() resolved — tracking is live.');
       renderer.setAnimationLoop(() => {
-        if (mixer) mixer.update(clock.getDelta());
+        updateOverlayTransform(); // CHANGED: replaces mixer.update(...)
         renderer.render(scene, camera);
       });
     } catch (err) {
